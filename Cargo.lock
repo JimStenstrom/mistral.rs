@@ -3246,6 +3246,7 @@ dependencies = [
  "async-recursion",
  "async-trait",
  "chrono",
+ "colored",
  "futures",
  "glob",
  "mistralrs",
