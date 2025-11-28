@@ -77,6 +77,7 @@ pub mod orchestrator;
 pub mod protocol;
 pub mod tools;
 pub mod worker;
+pub mod workflow;
 
 // Re-exports
 pub use learning::{
