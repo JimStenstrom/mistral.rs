@@ -586,3 +586,388 @@ impl Tool for GrepTool {
         60
     }
 }
+
+/// Parse email file and extract contact information
+pub struct ParseEmailTool;
+
+#[derive(Deserialize)]
+struct ParseEmailArgs {
+    path: String,
+}
+
+#[derive(serde::Serialize)]
+struct EmailContact {
+    name: Option<String>,
+    email: String,
+    role: String, // "from", "to", "cc"
+}
+
+#[derive(serde::Serialize)]
+struct ParsedEmail {
+    from: Vec<EmailContact>,
+    to: Vec<EmailContact>,
+    cc: Vec<EmailContact>,
+    subject: Option<String>,
+    date: Option<String>,
+}
+
+#[async_trait]
+impl Tool for ParseEmailTool {
+    fn name(&self) -> &str {
+        "parse_email"
+    }
+
+    fn description(&self) -> &str {
+        "Parse an email file (.eml) and extract sender, recipients, subject, and date. Returns structured contact information."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the .eml file to parse"
+                }
+            },
+            "required": ["path"]
+        })
+    }
+
+    async fn execute(&self, arguments: Value) -> Result<ToolResult> {
+        let args: ParseEmailArgs = serde_json::from_value(arguments)?;
+
+        let content = match fs::read_to_string(&args.path).await {
+            Ok(c) => c,
+            Err(e) => return Ok(ToolResult::error(format!("Failed to read file: {}", e))),
+        };
+
+        let parsed = parse_email_headers(&content);
+        Ok(ToolResult::success(serde_json::to_string_pretty(&parsed)?))
+    }
+
+    fn timeout_secs(&self) -> u64 {
+        10
+    }
+}
+
+fn parse_email_headers(content: &str) -> ParsedEmail {
+    let mut from = Vec::new();
+    let mut to = Vec::new();
+    let mut cc = Vec::new();
+    let mut subject = None;
+    let mut date = None;
+
+    // Split headers from body (empty line separates them)
+    let header_section = content.split("\r\n\r\n")
+        .next()
+        .or_else(|| content.split("\n\n").next())
+        .unwrap_or(content);
+
+    // Handle folded headers (continuation lines start with whitespace)
+    let mut current_header = String::new();
+    let mut headers = Vec::new();
+
+    for line in header_section.lines() {
+        if line.starts_with(' ') || line.starts_with('\t') {
+            // Continuation of previous header
+            current_header.push(' ');
+            current_header.push_str(line.trim());
+        } else {
+            if !current_header.is_empty() {
+                headers.push(current_header.clone());
+            }
+            current_header = line.to_string();
+        }
+    }
+    if !current_header.is_empty() {
+        headers.push(current_header);
+    }
+
+    for header in headers {
+        let lower = header.to_lowercase();
+        if lower.starts_with("from:") {
+            from.extend(parse_address_list(&header[5..], "from"));
+        } else if lower.starts_with("to:") {
+            to.extend(parse_address_list(&header[3..], "to"));
+        } else if lower.starts_with("cc:") {
+            cc.extend(parse_address_list(&header[3..], "cc"));
+        } else if lower.starts_with("subject:") {
+            subject = Some(header[8..].trim().to_string());
+        } else if lower.starts_with("date:") {
+            date = Some(header[5..].trim().to_string());
+        }
+    }
+
+    ParsedEmail { from, to, cc, subject, date }
+}
+
+fn parse_address_list(addresses: &str, role: &str) -> Vec<EmailContact> {
+    let mut contacts = Vec::new();
+
+    for addr in addresses.split(',') {
+        let addr = addr.trim();
+        if addr.is_empty() {
+            continue;
+        }
+
+        // Parse formats like: "Name <email@example.com>" or just "email@example.com"
+        if let Some(email_start) = addr.find('<') {
+            if let Some(email_end) = addr.find('>') {
+                let name = addr[..email_start].trim().trim_matches('"').to_string();
+                let email = addr[email_start + 1..email_end].trim().to_string();
+                contacts.push(EmailContact {
+                    name: if name.is_empty() { None } else { Some(name) },
+                    email,
+                    role: role.to_string(),
+                });
+            }
+        } else if addr.contains('@') {
+            contacts.push(EmailContact {
+                name: None,
+                email: addr.to_string(),
+                role: role.to_string(),
+            });
+        }
+    }
+
+    contacts
+}
+
+/// Create a vCard contact file
+pub struct CreateVCardTool;
+
+#[derive(Deserialize)]
+struct CreateVCardArgs {
+    output_path: String,
+    name: String,
+    email: String,
+    #[serde(default)]
+    phone: Option<String>,
+    #[serde(default)]
+    organization: Option<String>,
+    #[serde(default)]
+    append: bool,
+}
+
+#[async_trait]
+impl Tool for CreateVCardTool {
+    fn name(&self) -> &str {
+        "create_vcard"
+    }
+
+    fn description(&self) -> &str {
+        "Create a vCard (.vcf) contact file. Can append to existing file for multiple contacts."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "output_path": {
+                    "type": "string",
+                    "description": "Path for the output .vcf file"
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Full name of the contact"
+                },
+                "email": {
+                    "type": "string",
+                    "description": "Email address"
+                },
+                "phone": {
+                    "type": "string",
+                    "description": "Phone number (optional)"
+                },
+                "organization": {
+                    "type": "string",
+                    "description": "Organization/company (optional)"
+                },
+                "append": {
+                    "type": "boolean",
+                    "description": "If true, append to existing file instead of overwriting"
+                }
+            },
+            "required": ["output_path", "name", "email"]
+        })
+    }
+
+    async fn execute(&self, arguments: Value) -> Result<ToolResult> {
+        let args: CreateVCardArgs = serde_json::from_value(arguments)?;
+
+        // Generate vCard 3.0 format
+        let mut vcard = String::new();
+        vcard.push_str("BEGIN:VCARD\n");
+        vcard.push_str("VERSION:3.0\n");
+        vcard.push_str(&format!("FN:{}\n", args.name));
+
+        // Try to split name into first/last
+        let name_parts: Vec<&str> = args.name.split_whitespace().collect();
+        if name_parts.len() >= 2 {
+            let last = name_parts.last().unwrap();
+            let first = name_parts[..name_parts.len() - 1].join(" ");
+            vcard.push_str(&format!("N:{};{};;;\n", last, first));
+        } else {
+            vcard.push_str(&format!("N:{}\n", args.name));
+        }
+
+        vcard.push_str(&format!("EMAIL:{}\n", args.email));
+
+        if let Some(ref phone) = args.phone {
+            vcard.push_str(&format!("TEL:{}\n", phone));
+        }
+
+        if let Some(ref org) = args.organization {
+            vcard.push_str(&format!("ORG:{}\n", org));
+        }
+
+        vcard.push_str("END:VCARD\n");
+
+        // Write or append
+        let result = if args.append {
+            let mut existing = fs::read_to_string(&args.output_path).await.unwrap_or_default();
+            existing.push_str(&vcard);
+            fs::write(&args.output_path, existing).await
+        } else {
+            fs::write(&args.output_path, &vcard).await
+        };
+
+        match result {
+            Ok(_) => Ok(ToolResult::success(format!(
+                "Created vCard for {} at {}",
+                args.name, args.output_path
+            ))),
+            Err(e) => Ok(ToolResult::error(format!("Failed to write vCard: {}", e))),
+        }
+    }
+
+    fn timeout_secs(&self) -> u64 {
+        10
+    }
+}
+
+/// Batch process multiple email files to extract all contacts
+pub struct ExtractContactsTool;
+
+#[derive(Deserialize)]
+struct ExtractContactsArgs {
+    directory: String,
+    #[serde(default = "default_pattern")]
+    pattern: String,
+    #[serde(default)]
+    output_format: Option<String>, // "json" or "csv"
+}
+
+fn default_pattern() -> String {
+    "*.eml".to_string()
+}
+
+#[async_trait]
+impl Tool for ExtractContactsTool {
+    fn name(&self) -> &str {
+        "extract_contacts"
+    }
+
+    fn description(&self) -> &str {
+        "Scan a directory for email files and extract all unique contacts. Returns deduplicated list of contacts found."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "directory": {
+                    "type": "string",
+                    "description": "Directory to scan for email files"
+                },
+                "pattern": {
+                    "type": "string",
+                    "description": "Glob pattern for email files (default: *.eml)"
+                },
+                "output_format": {
+                    "type": "string",
+                    "enum": ["json", "csv"],
+                    "description": "Output format (default: json)"
+                }
+            },
+            "required": ["directory"]
+        })
+    }
+
+    async fn execute(&self, arguments: Value) -> Result<ToolResult> {
+        let args: ExtractContactsArgs = serde_json::from_value(arguments)?;
+
+        let pattern = format!("{}/{}", args.directory, args.pattern);
+        let mut all_contacts: std::collections::HashMap<String, (Option<String>, Vec<String>)> =
+            std::collections::HashMap::new();
+
+        // Find matching files
+        for entry in glob::glob(&pattern).map_err(|e| anyhow::anyhow!("Invalid pattern: {}", e))? {
+            if let Ok(path) = entry {
+                if let Ok(content) = fs::read_to_string(&path).await {
+                    let parsed = parse_email_headers(&content);
+
+                    for contact in parsed.from.into_iter()
+                        .chain(parsed.to)
+                        .chain(parsed.cc)
+                    {
+                        let email_lower = contact.email.to_lowercase();
+                        let entry = all_contacts.entry(email_lower).or_insert((None, Vec::new()));
+
+                        // Keep the best name we find
+                        if entry.0.is_none() && contact.name.is_some() {
+                            entry.0 = contact.name;
+                        }
+
+                        // Track roles
+                        if !entry.1.contains(&contact.role) {
+                            entry.1.push(contact.role);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Format output
+        let output_format = args.output_format.as_deref().unwrap_or("json");
+
+        if output_format == "csv" {
+            let mut csv = String::from("email,name,roles\n");
+            for (email, (name, roles)) in &all_contacts {
+                csv.push_str(&format!(
+                    "{},{},{}\n",
+                    email,
+                    name.as_deref().unwrap_or(""),
+                    roles.join(";")
+                ));
+            }
+            Ok(ToolResult::success(format!(
+                "Found {} unique contacts:\n{}",
+                all_contacts.len(),
+                csv
+            )))
+        } else {
+            let contacts: Vec<_> = all_contacts
+                .into_iter()
+                .map(|(email, (name, roles))| {
+                    json!({
+                        "email": email,
+                        "name": name,
+                        "roles": roles
+                    })
+                })
+                .collect();
+
+            Ok(ToolResult::success(format!(
+                "Found {} unique contacts:\n{}",
+                contacts.len(),
+                serde_json::to_string_pretty(&contacts)?
+            )))
+        }
+    }
+
+    fn timeout_secs(&self) -> u64 {
+        120
+    }
+}

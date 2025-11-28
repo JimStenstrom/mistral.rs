@@ -118,6 +118,10 @@ impl ToolRegistry {
         registry.register(Arc::new(SearchFilesTool));
         registry.register(Arc::new(ExecuteBashTool::new()));
         registry.register(Arc::new(GrepTool));
+        // Email and contact tools
+        registry.register(Arc::new(ParseEmailTool));
+        registry.register(Arc::new(CreateVCardTool));
+        registry.register(Arc::new(ExtractContactsTool));
         registry
     }
 
