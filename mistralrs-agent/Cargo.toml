@@ -1,0 +1,54 @@
+[package]
+name = "mistralrs-agent"
+version.workspace = true
+edition.workspace = true
+description = "Interactive agentic coding assistant using local LLM inference"
+homepage.workspace = true
+repository.workspace = true
+keywords = ["machine-learning", "agents", "cli", "llm"]
+categories = ["command-line-utilities"]
+license.workspace = true
+
+[[bin]]
+name = "mistralrs-agent"
+path = "src/main.rs"
+
+[dependencies]
+# Workspace dependencies
+mistralrs = { path = "../mistralrs" }
+mistralrs-core = { path = "../mistralrs-core" }
+mistralrs-swarm = { path = "../mistralrs-swarm" }
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+rustyline = { version = "15.0.0", default-features = false, features = ["with-file-history"] }
+
+# Async runtime
+tokio = { version = "1.43", features = ["full", "sync", "rt-multi-thread", "macros"] }
+futures = "0.3"
+async-trait = "0.1"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Logging & Output
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+colored = "2.1"
+indicatif = "0.17"
+
+# Utils
+uuid = { version = "1.0", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+parking_lot = "0.12"
+dirs = "6.0"
+
+[features]
+default = []
+cuda = ["mistralrs/cuda", "mistralrs-core/cuda", "mistralrs-swarm/cuda"]
+metal = ["mistralrs/metal", "mistralrs-core/metal", "mistralrs-swarm/metal"]

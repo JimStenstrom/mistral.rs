@@ -13,6 +13,7 @@ members = [
     "mistralrs-audio",
     "mistralrs-mcp",
     "mistralrs-swarm",
+    "mistralrs-agent",
 ]
 resolver = "2"
 
