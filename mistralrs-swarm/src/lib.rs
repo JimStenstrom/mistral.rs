@@ -72,6 +72,7 @@
 //! }
 //! ```
 
+pub mod git_sandbox;
 pub mod learning;
 pub mod orchestrator;
 pub mod protocol;
