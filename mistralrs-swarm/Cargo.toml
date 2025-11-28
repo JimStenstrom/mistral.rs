@@ -1,0 +1,60 @@
+[package]
+name = "mistralrs-swarm"
+version.workspace = true
+edition.workspace = true
+description = "Agentic swarm system using Claude as orchestrator and mistral.rs for local inference"
+homepage.workspace = true
+repository.workspace = true
+keywords = ["machine-learning", "agents", "swarm", "llm"]
+categories = ["science"]
+license.workspace = true
+
+[dependencies]
+# Workspace dependencies
+mistralrs = { path = "../mistralrs" }
+mistralrs-core = { path = "../mistralrs-core" }
+
+# Async runtime
+tokio = { version = "1.43", features = ["full", "sync", "rt-multi-thread", "macros"] }
+futures = "0.3"
+async-trait = "0.1"
+
+# HTTP client for Claude API
+reqwest = { version = "0.12", features = ["json", "stream"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utils
+uuid = { version = "1.0", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+parking_lot = "0.12"
+glob = "0.3"
+which = "7.0"
+async-recursion = "1.1"
+walkdir = "2.5"
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+[[example]]
+name = "simple_swarm"
+path = "examples/simple_swarm.rs"
+
+[[example]]
+name = "code_analysis"
+path = "examples/code_analysis.rs"
+
+[features]
+default = []
+cuda = ["mistralrs/cuda", "mistralrs-core/cuda"]
+metal = ["mistralrs/metal", "mistralrs-core/metal"]

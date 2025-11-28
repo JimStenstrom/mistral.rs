@@ -12,6 +12,7 @@ members = [
     "mistralrs-web-chat",
     "mistralrs-audio",
     "mistralrs-mcp",
+    "mistralrs-swarm",
 ]
 resolver = "2"
 
@@ -182,6 +183,7 @@ mistralrs-server-core = { path = "mistralrs-server-core" }
 mistralrs = { path = "mistralrs" }
 mistralrs-audio = { path = "mistralrs-audio" }
 mistralrs-mcp = { path = "mistralrs-mcp" }
+mistralrs-swarm = { path = "mistralrs-swarm" }
 
 [profile.release-with-debug]
 inherits = "release"
