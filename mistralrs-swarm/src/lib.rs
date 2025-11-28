@@ -72,6 +72,7 @@
 //! }
 //! ```
 
+pub mod executor;
 pub mod git_sandbox;
 pub mod learning;
 pub mod orchestrator;
@@ -81,6 +82,8 @@ pub mod worker;
 pub mod workflow;
 
 // Re-exports
+pub use executor::{execute, Executor, ExecutorConfig, Run};
+pub use git_sandbox::{GitSandbox, SandboxConfig};
 pub use learning::{
     ExecutionRecord, GraduationCandidate, Insights, LearningRecorder,
     LearningSystem, Pattern, PatternStore, TaskTemplate, TemplateStore,

@@ -134,6 +134,11 @@ impl GitSandbox {
         })
     }
 
+    /// Get the task ID
+    pub fn task_id(&self) -> &str {
+        &self.task_id
+    }
+
     /// Initialize the sandbox - create task branch from base
     pub async fn initialize(&mut self) -> Result<()> {
         let task_branch = self.task_branch_name();
