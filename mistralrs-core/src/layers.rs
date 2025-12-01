@@ -1,6 +1,25 @@
 #![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
 
-use std::{f32::consts::PI, ops::Mul, str::FromStr, sync::Arc};
+use std::{f32::consts::PI, ops::Mul, str::FromStr, sync::Arc, sync::OnceLock};
+
+/// Default chunk size for MLP forward pass to reduce peak memory usage.
+/// When processing sequences longer than this, the MLP will process in chunks
+/// to avoid allocating huge intermediate tensors.
+/// Can be overridden via MISTRALRS_MLP_CHUNK_SIZE environment variable.
+/// Set to 0 to disable chunking.
+const DEFAULT_MLP_CHUNK_SIZE: usize = 512;
+
+/// Get the MLP chunk size from environment or use default.
+/// Cached via OnceLock for efficiency.
+fn get_mlp_chunk_size() -> usize {
+    static MLP_CHUNK_SIZE: OnceLock<usize> = OnceLock::new();
+    *MLP_CHUNK_SIZE.get_or_init(|| {
+        std::env::var("MISTRALRS_MLP_CHUNK_SIZE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_MLP_CHUNK_SIZE)
+    })
+}
 
 use candle_core::{
     quantized::{QMatMul, QTensor},
@@ -2507,6 +2526,87 @@ impl GetFloatInfo for DType {
     }
 }
 
+/// Process MLP forward pass in chunks to reduce peak memory usage.
+/// This is particularly beneficial for long sequences where intermediate tensors
+/// (gate and up projections) would otherwise consume significant memory.
+///
+/// The chunking strategy:
+/// 1. Split input along sequence dimension into chunks
+/// 2. Process each chunk through gate/up projections independently
+/// 3. Apply activation and down projection per chunk
+/// 4. Concatenate results
+///
+/// Memory savings: For seq_len=4096 with chunk_size=512, peak memory is reduced
+/// from O(seq_len * intermediate_size) to O(chunk_size * intermediate_size).
+pub(crate) fn mlp_forward_chunked(
+    xs: &Tensor,
+    gate: &dyn QuantMethod,
+    up: &dyn QuantMethod,
+    down: &dyn QuantMethod,
+    act: Activation,
+    use_qmethod_matmul: bool,
+) -> Result<Tensor> {
+    let chunk_size = get_mlp_chunk_size();
+    let seq_len = xs.dim(1)?; // Shape: (batch, seq_len, hidden)
+
+    // If chunking disabled or sequence is short enough, use regular forward
+    if chunk_size == 0 || seq_len <= chunk_size {
+        let lhs = if use_qmethod_matmul {
+            MatMul.qmethod_matmul(xs, gate)?
+        } else {
+            gate.forward(xs)?
+        };
+        let rhs = if use_qmethod_matmul {
+            MatMul.qmethod_matmul(xs, up)?
+        } else {
+            up.forward(xs)?
+        };
+        let activated = crate::ops::mul_and_act(&lhs, &rhs, act)?;
+        return if use_qmethod_matmul {
+            MatMul.qmethod_matmul(&activated, down)
+        } else {
+            down.forward(&activated)
+        };
+    }
+
+    // Process in chunks to reduce peak memory
+    let mut chunk_results = Vec::new();
+    let mut offset = 0;
+
+    while offset < seq_len {
+        let current_chunk_size = (seq_len - offset).min(chunk_size);
+
+        // Extract chunk: (batch, chunk_size, hidden)
+        let xs_chunk = xs.narrow(1, offset, current_chunk_size)?;
+
+        // Forward through gate and up projections
+        let lhs = if use_qmethod_matmul {
+            MatMul.qmethod_matmul(&xs_chunk, gate)?
+        } else {
+            gate.forward(&xs_chunk)?
+        };
+        let rhs = if use_qmethod_matmul {
+            MatMul.qmethod_matmul(&xs_chunk, up)?
+        } else {
+            up.forward(&xs_chunk)?
+        };
+
+        // Apply activation and down projection
+        let activated = crate::ops::mul_and_act(&lhs, &rhs, act)?;
+        let chunk_result = if use_qmethod_matmul {
+            MatMul.qmethod_matmul(&activated, down)?
+        } else {
+            down.forward(&activated)?
+        };
+
+        chunk_results.push(chunk_result);
+        offset += current_chunk_size;
+    }
+
+    // Concatenate all chunks along sequence dimension
+    Tensor::cat(&chunk_results, 1)
+}
+
 #[derive(Clone)]
 pub struct Mlp {
     pub gate: Arc<dyn QuantMethod>,
@@ -2606,11 +2706,15 @@ impl Mlp {
         if let Some(t) = self.gate.quantized_act_type() {
             xs = xs.to_dtype(t)?;
         }
-        let lhs = self.gate.forward(&xs)?;
-        let rhs = self.up.forward(&xs)?;
-        let mut res = self
-            .down
-            .forward(&crate::ops::mul_and_act(&lhs, &rhs, self.act)?)?;
+        // Use chunked forward for memory efficiency on long sequences
+        let mut res = mlp_forward_chunked(
+            &xs,
+            &*self.gate,
+            &*self.up,
+            &*self.down,
+            self.act,
+            false, // use regular forward, not qmethod_matmul
+        )?;
         if self.gate.quantized_act_type().is_some() {
             res = res.to_dtype(original_dtype)?;
         }
@@ -2627,10 +2731,15 @@ impl MlpLayer for Mlp {
         if let Some(t) = self.gate.quantized_act_type() {
             xs = xs.to_dtype(t)?;
         }
-        let lhs = MatMul.qmethod_matmul(&xs, &*self.gate)?;
-        let rhs = MatMul.qmethod_matmul(&xs, &*self.up)?;
-        let mut res =
-            MatMul.qmethod_matmul(&crate::ops::mul_and_act(&lhs, &rhs, self.act)?, &*self.down)?;
+        // Use chunked forward for memory efficiency on long sequences
+        let mut res = mlp_forward_chunked(
+            &xs,
+            &*self.gate,
+            &*self.up,
+            &*self.down,
+            self.act,
+            true, // use qmethod_matmul for MlpLayer trait
+        )?;
         if self.gate.quantized_act_type().is_some() {
             res = res.to_dtype(original_dtype)?;
         }

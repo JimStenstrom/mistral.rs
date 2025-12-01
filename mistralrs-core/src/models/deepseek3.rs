@@ -15,8 +15,8 @@ use crate::{
     attention::SdpaParams,
     device_map::DeviceMapper,
     layers::{
-        embedding, Activation, CausalMasker, DeepSeekV2RopeConfig, DeepSeekV2RopeScaling,
-        DeepSeekV2RotaryEmbedding, Mlp, RmsNorm, Sdpa,
+        embedding, mlp_forward_chunked, Activation, CausalMasker, DeepSeekV2RopeConfig,
+        DeepSeekV2RopeScaling, DeepSeekV2RotaryEmbedding, Mlp, RmsNorm, Sdpa,
     },
     layers_masker::{masked_fill, PastKvLenCache},
     ops::{SplitOp, TopKLastDimOp, TopKOutput},
@@ -424,11 +424,15 @@ impl Expert {
         if let Some(t) = self.gate.quantized_act_type() {
             xs = xs.to_dtype(t)?;
         }
-        let lhs = self.gate.forward(&xs)?;
-        let rhs = self.up.forward(&xs)?;
-        let mut res = self
-            .down
-            .forward(&crate::ops::mul_and_act(&lhs, &rhs, self.act)?)?;
+        // Use chunked forward for memory efficiency on long sequences
+        let mut res = mlp_forward_chunked(
+            &xs,
+            &*self.gate,
+            &*self.up,
+            &*self.down,
+            self.act,
+            false,
+        )?;
         if self.gate.quantized_act_type().is_some() {
             res = res.to_dtype(original_dtype)?;
         }

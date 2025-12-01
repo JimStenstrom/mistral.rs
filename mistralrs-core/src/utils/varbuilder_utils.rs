@@ -3,7 +3,7 @@
 use std::{
     collections::HashMap,
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, OnceLock},
     thread::{self, JoinHandle},
 };
 
@@ -14,6 +14,16 @@ use regex::Regex;
 use crate::lora::LoraConfig;
 use crate::utils::progress::IterWithProgress;
 use derive_new::new;
+
+/// Check if low memory mode is enabled via environment variable.
+/// When enabled, uses mmap-based loading even on CUDA devices, reducing peak
+/// memory usage by lazily loading weights from disk instead of all at once.
+/// This is useful for running large models on memory-constrained systems.
+/// Set MISTRALRS_LOW_MEMORY_LOAD=1 to enable.
+fn is_low_memory_mode() -> bool {
+    static LOW_MEMORY_MODE: OnceLock<bool> = OnceLock::new();
+    *LOW_MEMORY_MODE.get_or_init(|| std::env::var("MISTRALRS_LOW_MEMORY_LOAD").is_ok())
+}
 
 trait TensorLoaderBackend {
     fn get_names(&self) -> Vec<String>;
@@ -74,10 +84,21 @@ pub(crate) fn from_mmaped_safetensors(
     predicate: impl Fn(String) -> bool + Send + Sync + Clone + 'static,
     get_device_for_tensor: Arc<dyn Fn(String) -> DeviceForLoadTensor + Send + Sync + 'static>,
 ) -> Result<ShardedVarBuilder> {
-    // No mmap for cuda.
-    if xlora_paths.is_empty() && !base_device.is_cuda() || cfg!(feature = "ring") {
+    // Use mmap for non-CUDA devices, ring feature, or when low memory mode is enabled.
+    // Low memory mode allows mmap on CUDA to reduce peak memory during loading.
+    let use_mmap = xlora_paths.is_empty() && !base_device.is_cuda()
+        || cfg!(feature = "ring")
+        || (is_low_memory_mode() && xlora_paths.is_empty());
+
+    if use_mmap {
         if !silent {
-            tracing::info!("Loading model using mmap strategy.");
+            if is_low_memory_mode() && base_device.is_cuda() {
+                tracing::info!(
+                    "Loading model using mmap strategy (low memory mode enabled for CUDA)."
+                );
+            } else {
+                tracing::info!("Loading model using mmap strategy.");
+            }
         }
         return Ok(unsafe {
             ShardedSafeTensors::sharded(
