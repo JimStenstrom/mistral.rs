@@ -135,7 +135,7 @@ impl CudaGraphRunner {
     /// call `end_capture()` to complete the capture.
     pub fn begin_capture(
         &mut self,
-        stream: &CudaStream,
+        _stream: &CudaStream,
         batch_size: usize,
     ) -> Result<(), DriverError> {
         if !self.config.enabled {
